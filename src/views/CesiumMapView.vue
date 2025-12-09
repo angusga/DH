@@ -79,7 +79,7 @@ const routeEntity = ref(null)
 onMounted(async () => {
   await initCesium()
   await loadGeoJsonData()
-  // 构建管线连接关系，供 Dijkstra 最短路径算法使用
+  // 线数据加载完成后构建管线连接关系
   buildPolyLineConnections()
   displayPolyLines()
 })
@@ -127,28 +127,66 @@ function isValidCoordinate(lon, lat) {
 
 async function loadGeoJsonData() {
   try {
-    const response = await fetch('/dld.geojson')
+    // 改为读取线数据的 GeoJSON
+    const response = await fetch('/dlcs.geojson')
     const geojson = await response.json()
 
-    polyLinePoints.value = geojson.features
-      .map(feature => {
-        const lon = feature.geometry.coordinates[0]
-        const lat = feature.geometry.coordinates[1]
+    const points = []
+    geojson.features.forEach((feature, featureIndex) => {
+      if (!feature.geometry) return
+
+      const geometry = feature.geometry
+      const props = feature.properties || {}
+
+      const lineId =
+        props.PolyLineID ??
+        props.lineId ??
+        props.LINE_ID ??
+        feature.id ??
+        `line_${featureIndex}`
+
+      if (geometry.type === 'LineString') {
+        const coords = geometry.coordinates || []
+        coords.forEach((coord, idx) => {
+          const lon = coord[0]
+          const lat = coord[1]
+
+          if (!isValidCoordinate(lon, lat)) {
+            console.warn('无效坐标(LineString):', lineId, idx, lon, lat)
+            return
+          }
+
+          points.push({
+            id: `${lineId}_${idx}`,
+            polyLineId: lineId,
+            plPointId: idx,
+            longitude: Number(lon),
+            latitude: Number(lat),
+            info: props.PLPointInf
+          })
+        })
+      } else if (geometry.type === 'Point') {
+        // 兼容旧的点数据格式
+        const lon = geometry.coordinates[0]
+        const lat = geometry.coordinates[1]
 
         if (!isValidCoordinate(lon, lat)) {
-          return null
+          console.warn('无效坐标(Point):', props.ID, lon, lat)
+          return
         }
 
-        return {
-          id: feature.properties.ID,
-          polyLineId: feature.properties.PolyLineID,
-          plPointId: feature.properties.PLPointID,
+        points.push({
+          id: props.ID ?? `pt_${featureIndex}`,
+          polyLineId: props.PolyLineID ?? lineId,
+          plPointId: props.PLPointID ?? 0,
           longitude: Number(lon),
           latitude: Number(lat),
-          info: feature.properties.PLPointInf
-        }
-      })
-      .filter(p => p !== null)
+          info: props.PLPointInf
+        })
+      }
+    })
+
+    polyLinePoints.value = points
 
     // 按 PolyLineID 分组
     polyLines.value = {}

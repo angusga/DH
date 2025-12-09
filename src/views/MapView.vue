@@ -181,31 +181,71 @@ function isValidCoordinate(lon, lat) {
 // 从geojson文件加载数据
 async function loadGeoJsonData() {
   try {
-    const response = await fetch('/dld.geojson')
+    // 改为读取线数据的 GeoJSON
+    const response = await fetch('/dlcs.geojson')
     const geojson = await response.json()
     
-    // 解析geojson数据，过滤无效坐标
-    polyLinePoints.value = geojson.features
-      .map(feature => {
-        const lon = feature.geometry.coordinates[0]
-        const lat = feature.geometry.coordinates[1]
+    // 解析线要素，将每条线拆成有序的点序列
+    const points = []
+    geojson.features.forEach((feature, featureIndex) => {
+      if (!feature.geometry) return
+      
+      const geometry = feature.geometry
+      const props = feature.properties || {}
+      
+      // 线 ID，优先用属性里的 PolyLineID，没有就用要素 id 或索引
+      const lineId =
+        props.PolyLineID ??
+        props.lineId ??
+        props.LINE_ID ??
+        feature.id ??
+        `line_${featureIndex}`
+      
+      if (geometry.type === 'LineString') {
+        const coords = geometry.coordinates || []
+        coords.forEach((coord, idx) => {
+          const lon = coord[0]
+          const lat = coord[1]
+          
+          if (!isValidCoordinate(lon, lat)) {
+            console.warn('无效坐标(LineString):', lineId, idx, lon, lat)
+            return
+          }
+          
+          points.push({
+            // 每个点生成唯一 id：管线ID_序号
+            id: `${lineId}_${idx}`,
+            polyLineId: lineId,
+            // 在线上的顺序，用于后续按顺序导航
+            plPointId: idx,
+            longitude: Number(lon),
+            latitude: Number(lat),
+            info: props.PLPointInf
+          })
+        })
+      } else if (geometry.type === 'Point') {
+        // 兼容旧的点数据格式（如果 dlcs.geojson 里仍然有点要素）
+        const lon = geometry.coordinates[0]
+        const lat = geometry.coordinates[1]
         
-        // 验证坐标有效性
         if (!isValidCoordinate(lon, lat)) {
-          console.warn('无效坐标:', feature.properties.ID, lon, lat)
-          return null
+          console.warn('无效坐标(Point):', props.ID, lon, lat)
+          return
         }
         
-        return {
-          id: feature.properties.ID,
-          polyLineId: feature.properties.PolyLineID,
-          plPointId: feature.properties.PLPointID,
+        points.push({
+          id: props.ID ?? `pt_${featureIndex}`,
+          polyLineId: props.PolyLineID ?? lineId,
+          plPointId: props.PLPointID ?? 0,
           longitude: Number(lon),
           latitude: Number(lat),
-          info: feature.properties.PLPointInf
-        }
-      })
-      .filter(point => point !== null) // 过滤掉无效点
+          info: props.PLPointInf
+        })
+      }
+      // 如果是 MultiLineString 等其他几何类型，可以按需要再扩展
+    })
+    
+    polyLinePoints.value = points
     
     // 按PolyLineID分组
     polyLines.value = {}
@@ -216,7 +256,7 @@ async function loadGeoJsonData() {
       polyLines.value[point.polyLineId].push(point)
     })
     
-    // 按PLPointID排序
+    // 按PLPointID排序（保证沿线顺序正确）
     Object.keys(polyLines.value).forEach(lineId => {
       polyLines.value[lineId].sort((a, b) => a.plPointId - b.plPointId)
     })
