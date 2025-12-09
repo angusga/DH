@@ -65,11 +65,9 @@ const viewerRef = ref(null)
 const showPanel = ref(true)
 
 // 管线与导航相关数据（复用 AMap 版本的数据结构）
-// 注意：这里只实现一个“简化演示版”路径计算：
-//  - 如果起终点在同一条管线：沿管线走
-//  - 不在同一条管线：画一条直线连接
 const polyLinePoints = ref([])
 const polyLines = ref({})
+const polyLineConnections = ref({}) // 管线连接关系
 const selectedStartPoint = ref(null)
 const selectedEndPoint = ref(null)
 const navigationResult = ref(null)
@@ -297,7 +295,205 @@ function calculateDistance(lon1, lat1, lon2, lat2) {
   return R * c
 }
 
-// 简化版：起点终点选择 + 简单路径
+// 构建管线连接关系（通过端点连接）
+function buildPolyLineConnections() {
+  polyLineConnections.value = {}
+  const connectionThreshold = 10 // 10米内认为连接
+
+  const lineIds = Object.keys(polyLines.value)
+
+  // 初始化连接关系
+  lineIds.forEach(lineId => {
+    polyLineConnections.value[lineId] = []
+  })
+
+  // 找到每条管线的起点和终点
+  const lineEndpoints = {}
+  lineIds.forEach(lineId => {
+    const points = polyLines.value[lineId]
+    if (points.length > 0) {
+      const start = points[0]
+      const end = points[points.length - 1]
+      lineEndpoints[lineId] = {
+        start: { lon: start.longitude, lat: start.latitude },
+        end: { lon: end.longitude, lat: end.latitude }
+      }
+    }
+  })
+
+  // 检查哪些管线是连接的
+  for (let i = 0; i < lineIds.length; i++) {
+    const lineId1 = lineIds[i]
+    const ep1 = lineEndpoints[lineId1]
+    if (!ep1) continue
+
+    for (let j = i + 1; j < lineIds.length; j++) {
+      const lineId2 = lineIds[j]
+      const ep2 = lineEndpoints[lineId2]
+      if (!ep2) continue
+
+      const dist1 = calculateDistance(ep1.start.lon, ep1.start.lat, ep2.start.lon, ep2.start.lat)
+      const dist2 = calculateDistance(ep1.start.lon, ep1.start.lat, ep2.end.lon, ep2.end.lat)
+      const dist3 = calculateDistance(ep1.end.lon, ep1.end.lat, ep2.start.lon, ep2.start.lat)
+      const dist4 = calculateDistance(ep1.end.lon, ep1.end.lat, ep2.end.lon, ep2.end.lat)
+
+      if (
+        dist1 < connectionThreshold ||
+        dist2 < connectionThreshold ||
+        dist3 < connectionThreshold ||
+        dist4 < connectionThreshold
+      ) {
+        if (!polyLineConnections.value[lineId1].includes(lineId2)) {
+          polyLineConnections.value[lineId1].push(lineId2)
+        }
+        if (!polyLineConnections.value[lineId2].includes(lineId1)) {
+          polyLineConnections.value[lineId2].push(lineId1)
+        }
+      }
+    }
+  }
+}
+
+// 计算管线的长度
+function calculatePolyLineLength(lineId) {
+  const points = polyLines.value[lineId]
+  if (!points || points.length < 2) return 0
+
+  let length = 0
+  for (let i = 0; i < points.length - 1; i++) {
+    length += calculateDistance(
+      points[i].longitude,
+      points[i].latitude,
+      points[i + 1].longitude,
+      points[i + 1].latitude
+    )
+  }
+  return length
+}
+
+// Dijkstra算法计算最短路径（管线为节点）
+function dijkstraShortestPath(startLineId, endLineId) {
+  const INF = 1e10
+  const lineIds = Object.keys(polyLines.value)
+  const n = lineIds.length
+
+  const dist = {}
+  const prev = {}
+  const visited = {}
+
+  lineIds.forEach(id => {
+    dist[id] = INF
+    prev[id] = null
+    visited[id] = false
+  })
+
+  dist[startLineId] = 0
+
+  for (let i = 0; i < n; i++) {
+    let u = null
+    let minDist = INF
+    lineIds.forEach(id => {
+      if (!visited[id] && dist[id] < minDist) {
+        minDist = dist[id]
+        u = id
+      }
+    })
+
+    if (u === null || u === endLineId) break
+    visited[u] = true
+
+    const neighbors = polyLineConnections.value[u] || []
+    neighbors.forEach(v => {
+      if (!visited[v]) {
+        const edgeLength = calculatePolyLineLength(v)
+        const alt = dist[u] + edgeLength
+        if (alt < dist[v]) {
+          dist[v] = alt
+          prev[v] = u
+        }
+      }
+    })
+  }
+
+  const path = []
+  let current = endLineId
+  while (current !== null) {
+    path.unshift(current)
+    current = prev[current]
+  }
+
+  return {
+    path,
+    distance: dist[endLineId] === INF ? null : dist[endLineId]
+  }
+}
+
+// 获取管线上的点序列（从point1到point2）
+function getPointsOnLine(lineId, point1, point2) {
+  const linePoints = polyLines.value[lineId]
+  if (!linePoints || linePoints.length === 0) return []
+
+  const index1 = linePoints.findIndex(p => p.id === point1.id)
+  const index2 = linePoints.findIndex(p => p.id === point2.id)
+
+  if (index1 === -1 || index2 === -1) return []
+
+  const points = []
+  if (index1 <= index2) {
+    for (let i = index1; i <= index2; i++) {
+      points.push({
+        longitude: linePoints[i].longitude,
+        latitude: linePoints[i].latitude
+      })
+    }
+  } else {
+    for (let i = index1; i >= index2; i--) {
+      points.push({
+        longitude: linePoints[i].longitude,
+        latitude: linePoints[i].latitude
+      })
+    }
+  }
+
+  return points
+}
+
+// 找到两条管线的连接点
+function findConnectionPoint(lineId1, lineId2) {
+  const line1 = polyLines.value[lineId1]
+  const line2 = polyLines.value[lineId2]
+
+  if (!line1 || !line2 || line1.length === 0 || line2.length === 0) {
+    return null
+  }
+
+  const threshold = 10 // 10米
+  const endpoints1 = [line1[0], line1[line1.length - 1]]
+  const endpoints2 = [line2[0], line2[line2.length - 1]]
+
+  let minDist = Infinity
+  let bestConnection = null
+
+  for (const ep1 of endpoints1) {
+    for (const ep2 of endpoints2) {
+      const dist = calculateDistance(ep1.longitude, ep1.latitude, ep2.longitude, ep2.latitude)
+      if (dist < threshold && dist < minDist) {
+        minDist = dist
+        bestConnection = {
+          point1: ep1,
+          point2: ep2,
+          line1Endpoint: ep1 === line1[0] ? 'start' : 'end',
+          line2Endpoint: ep2 === line2[0] ? 'start' : 'end',
+          distance: dist
+        }
+      }
+    }
+  }
+
+  return bestConnection
+}
+
+// 起点终点选择
 function selectPoint(point, type) {
   if (type === 'start') {
     selectedStartPoint.value = point
@@ -305,12 +501,12 @@ function selectPoint(point, type) {
     selectedEndPoint.value = point
   }
 
-  // 自动计算一次
   if (selectedStartPoint.value && selectedEndPoint.value) {
     calculateRoute()
   }
 }
 
+// 严格沿管线网络计算路径（和高德版本一致）
 function calculateRoute() {
   if (!selectedStartPoint.value || !selectedEndPoint.value) return
 
@@ -321,46 +517,209 @@ function calculateRoute() {
   let distance = 0
 
   if (start.polyLineId === end.polyLineId) {
-    // 同一条管线：沿着管线走
-    const linePoints = polyLines.value[start.polyLineId] || []
-    const idx1 = linePoints.findIndex(p => p.id === start.id)
-    const idx2 = linePoints.findIndex(p => p.id === end.id)
+    // 起终点在同一条管线
+    path = getPointsOnLine(start.polyLineId, start, end)
 
-    if (idx1 !== -1 && idx2 !== -1) {
-      if (idx1 <= idx2) {
-        for (let i = idx1; i <= idx2; i++) {
-          path.push({
-            longitude: linePoints[i].longitude,
-            latitude: linePoints[i].latitude
-          })
-        }
-      } else {
-        for (let i = idx1; i >= idx2; i--) {
-          path.push({
-            longitude: linePoints[i].longitude,
-            latitude: linePoints[i].latitude
-          })
+    for (let i = 0; i < path.length - 1; i++) {
+      distance += calculateDistance(
+        path[i].longitude,
+        path[i].latitude,
+        path[i + 1].longitude,
+        path[i + 1].latitude
+      )
+    }
+  } else {
+    // 不同管线，使用Dijkstra算法找最短路径
+    const result = dijkstraShortestPath(start.polyLineId, end.polyLineId)
+
+    if (result.distance === null || result.path.length === 0) {
+      // 和高德版一样，找不到管线网络路径时才退回直线
+      path = [
+        { longitude: start.longitude, latitude: start.latitude },
+        { longitude: end.longitude, latitude: end.latitude }
+      ]
+      distance = calculateDistance(start.longitude, start.latitude, end.longitude, end.latitude)
+    } else {
+      path = []
+
+      // 1. 从起点到起点所在管线的连接点
+      const startLinePoints = polyLines.value[start.polyLineId]
+      const startIndex = startLinePoints.findIndex(p => p.id === start.id)
+
+      if (startIndex >= 0) {
+        const nextLineId = result.path.length > 1 ? result.path[1] : end.polyLineId
+        const connection = findConnectionPoint(start.polyLineId, nextLineId)
+
+        if (connection) {
+          const connectionPoint = connection.point1
+          const connectionIndex = startLinePoints.findIndex(p => p.id === connectionPoint.id)
+
+          if (connectionIndex >= 0) {
+            if (startIndex <= connectionIndex) {
+              for (let i = startIndex; i <= connectionIndex; i++) {
+                path.push({
+                  longitude: startLinePoints[i].longitude,
+                  latitude: startLinePoints[i].latitude
+                })
+              }
+            } else {
+              for (let i = startIndex; i >= connectionIndex; i--) {
+                path.push({
+                  longitude: startLinePoints[i].longitude,
+                  latitude: startLinePoints[i].latitude
+                })
+              }
+            }
+          }
+        } else {
+          const distToStart = calculateDistance(
+            start.longitude,
+            start.latitude,
+            startLinePoints[0].longitude,
+            startLinePoints[0].latitude
+          )
+          const distToEnd = calculateDistance(
+            start.longitude,
+            start.latitude,
+            startLinePoints[startLinePoints.length - 1].longitude,
+            startLinePoints[startLinePoints.length - 1].latitude
+          )
+
+          if (distToStart < distToEnd) {
+            for (let i = startIndex; i >= 0; i--) {
+              path.push({
+                longitude: startLinePoints[i].longitude,
+                latitude: startLinePoints[i].latitude
+              })
+            }
+          } else {
+            for (let i = startIndex; i < startLinePoints.length; i++) {
+              path.push({
+                longitude: startLinePoints[i].longitude,
+                latitude: startLinePoints[i].latitude
+              })
+            }
+          }
         }
       }
+
+      // 2. 中间各条管线
+      for (let i = 1; i < result.path.length - 1; i++) {
+        const lineId = result.path[i]
+        const linePoints = polyLines.value[lineId]
+
+        if (linePoints && linePoints.length > 0) {
+          const prevLineId = result.path[i - 1]
+          const nextLineId = result.path[i + 1]
+
+          const prevConnection = findConnectionPoint(prevLineId, lineId)
+          const nextConnection = findConnectionPoint(lineId, nextLineId)
+
+          if (prevConnection && nextConnection) {
+            const prevPoint = prevConnection.point2
+            const nextPoint = nextConnection.point1
+
+            const prevIndex = linePoints.findIndex(p => p.id === prevPoint.id)
+            const nextIndex = linePoints.findIndex(p => p.id === nextPoint.id)
+
+            if (prevIndex >= 0 && nextIndex >= 0) {
+              if (prevIndex <= nextIndex) {
+                for (let j = prevIndex; j <= nextIndex; j++) {
+                  path.push({
+                    longitude: linePoints[j].longitude,
+                    latitude: linePoints[j].latitude
+                  })
+                }
+              } else {
+                for (let j = prevIndex; j >= nextIndex; j--) {
+                  path.push({
+                    longitude: linePoints[j].longitude,
+                    latitude: linePoints[j].latitude
+                  })
+                }
+              }
+            }
+          } else {
+            linePoints.forEach(p => {
+              path.push({
+                longitude: p.longitude,
+                latitude: p.latitude
+              })
+            })
+          }
+        }
+      }
+
+      // 3. 终点所在管线，从连接点到终点
+      const endLinePoints = polyLines.value[end.polyLineId]
+      const endIndex = endLinePoints.findIndex(p => p.id === end.id)
+
+      if (endIndex >= 0 && result.path.length > 1) {
+        const prevLineId = result.path[result.path.length - 2]
+        const connection = findConnectionPoint(prevLineId, end.polyLineId)
+
+        if (connection) {
+          const connectionPoint = connection.point2
+          const connectionIndex = endLinePoints.findIndex(p => p.id === connectionPoint.id)
+
+          if (connectionIndex >= 0) {
+            if (connectionIndex <= endIndex) {
+              for (let i = connectionIndex; i <= endIndex; i++) {
+                path.push({
+                  longitude: endLinePoints[i].longitude,
+                  latitude: endLinePoints[i].latitude
+                })
+              }
+            } else {
+              for (let i = connectionIndex; i >= endIndex; i--) {
+                path.push({
+                  longitude: endLinePoints[i].longitude,
+                  latitude: endLinePoints[i].latitude
+                })
+              }
+            }
+          }
+        } else {
+          const distToStart = calculateDistance(
+            end.longitude,
+            end.latitude,
+            endLinePoints[0].longitude,
+            endLinePoints[0].latitude
+          )
+          const distToEnd = calculateDistance(
+            end.longitude,
+            end.latitude,
+            endLinePoints[endLinePoints.length - 1].longitude,
+            endLinePoints[endLinePoints.length - 1].latitude
+          )
+
+          if (distToStart < distToEnd) {
+            for (let i = 0; i <= endIndex; i++) {
+              path.push({
+                longitude: endLinePoints[i].longitude,
+                latitude: endLinePoints[i].latitude
+              })
+            }
+          } else {
+            for (let i = endLinePoints.length - 1; i >= endIndex; i--) {
+              path.push({
+                longitude: endLinePoints[i].longitude,
+                latitude: endLinePoints[i].latitude
+              })
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < path.length - 1; i++) {
+        distance += calculateDistance(
+          path[i].longitude,
+          path[i].latitude,
+          path[i + 1].longitude,
+          path[i + 1].latitude
+        )
+      }
     }
-  }
-
-  if (path.length < 2) {
-    // 不在同一条管线，或上面没成功，就用直线连接（演示）
-    path = [
-      { longitude: start.longitude, latitude: start.latitude },
-      { longitude: end.longitude, latitude: end.latitude }
-    ]
-  }
-
-  // 计算距离
-  for (let i = 0; i < path.length - 1; i++) {
-    distance += calculateDistance(
-      path[i].longitude,
-      path[i].latitude,
-      path[i + 1].longitude,
-      path[i + 1].latitude
-    )
   }
 
   navigationResult.value = {
@@ -369,7 +728,8 @@ function calculateRoute() {
     distanceStr:
       distance < 2000
         ? `${distance.toFixed(2)}m`
-        : `${(distance / 1000).toFixed(2)}km`
+        : `${(distance / 1000).toFixed(2)}km`,
+    pathPointCount: path.length
   }
 
   drawRoute(path)
