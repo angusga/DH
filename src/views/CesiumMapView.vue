@@ -234,34 +234,6 @@ async function loadGeoJsonData() {
   } catch (e) {
     console.error('加载 geojson 失败:', e)
   }
-}`,
-          polyLineId: props.PolyLineID ?? baseLineId,
-          plPointId: props.PLPointID ?? 0,
-          longitude: Number(lon),
-          latitude: Number(lat),
-          info: props.PLPointInf
-        })
-      }
-    })
-
-    polyLinePoints.value = points
-
-    // 按 PolyLineID 分组
-    polyLines.value = {}
-    polyLinePoints.value.forEach(point => {
-      if (!polyLines.value[point.polyLineId]) {
-        polyLines.value[point.polyLineId] = []
-      }
-      polyLines.value[point.polyLineId].push(point)
-    })
-
-    // 按 PLPointID 排序
-    Object.keys(polyLines.value).forEach(lineId => {
-      polyLines.value[lineId].sort((a, b) => a.plPointId - b.plPointId)
-    })
-  } catch (e) {
-    console.error('加载 geojson 失败:', e)
-  }
 }
 
 function displayPolyLines() {
