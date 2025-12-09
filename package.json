@@ -13,7 +13,8 @@
     "pinia": "^2.1.7",
     "axios": "^1.6.2",
     "@amap/amap-jsapi-loader": "^1.0.1",
-    "cesium": "1.114.0"
+    "cesium": "1.114.0",
+    "@zip.js/zip.js": "2.7.34"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^4.5.0",
