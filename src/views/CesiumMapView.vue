@@ -79,6 +79,8 @@ const routeEntity = ref(null)
 onMounted(async () => {
   await initCesium()
   await loadGeoJsonData()
+  // 构建管线连接关系，供 Dijkstra 最短路径算法使用
+  buildPolyLineConnections()
   displayPolyLines()
 })
 
