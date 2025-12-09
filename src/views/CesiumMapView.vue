@@ -127,7 +127,7 @@ function isValidCoordinate(lon, lat) {
 
 async function loadGeoJsonData() {
   try {
-    // 改为读取线数据的 GeoJSON
+    // 改为读取线数据的 GeoJSON（dlcs.geojson）
     const response = await fetch('/dlcs.geojson')
     const geojson = await response.json()
 
@@ -138,46 +138,98 @@ async function loadGeoJsonData() {
       const geometry = feature.geometry
       const props = feature.properties || {}
 
-      const lineId =
+      const baseId =
         props.PolyLineID ??
         props.lineId ??
         props.LINE_ID ??
+        props.name ??
+        props.number ??
         feature.id ??
-        `line_${featureIndex}`
+        `f${featureIndex}`
 
-      if (geometry.type === 'LineString') {
+      if (geometry.type === 'MultiLineString') {
+        const multiCoords = geometry.coordinates || []
+        multiCoords.forEach((lineCoords, lineIndex) => {
+          const lineId = `${baseId}_${lineIndex}`
+          const coords = lineCoords || []
+          coords.forEach((coord, idx) => {
+            const lon = coord[0]
+            const lat = coord[1] // 忽略高程
+            if (!isValidCoordinate(lon, lat)) {
+              console.warn('无效坐标(MultiLineString):', lineId, idx, lon, lat)
+              return
+            }
+            points.push({
+              id: `${lineId}_${idx}`,
+              polyLineId: lineId,
+              plPointId: idx,
+              longitude: Number(lon),
+              latitude: Number(lat),
+              info: props.desc || props.cmt || null
+            })
+          })
+        })
+      } else if (geometry.type === 'LineString') {
+        const lineId = `${baseId}_0`
         const coords = geometry.coordinates || []
         coords.forEach((coord, idx) => {
           const lon = coord[0]
           const lat = coord[1]
-
           if (!isValidCoordinate(lon, lat)) {
             console.warn('无效坐标(LineString):', lineId, idx, lon, lat)
             return
           }
-
           points.push({
             id: `${lineId}_${idx}`,
             polyLineId: lineId,
             plPointId: idx,
             longitude: Number(lon),
             latitude: Number(lat),
-            info: props.PLPointInf
+            info: props.desc || props.cmt || null
           })
         })
       } else if (geometry.type === 'Point') {
         // 兼容旧的点数据格式
         const lon = geometry.coordinates[0]
         const lat = geometry.coordinates[1]
-
         if (!isValidCoordinate(lon, lat)) {
           console.warn('无效坐标(Point):', props.ID, lon, lat)
           return
         }
+        points.push({
+          id: props.ID ?? `pt_${featureIndex}`,
+          polyLineId: props.PolyLineID ?? baseId,
+          plPointId: props.PLPointID ?? 0,
+          longitude: Number(lon),
+          latitude: Number(lat),
+          info: props.desc || props.cmt || null
+        })
+      }
+    })
+
+    polyLinePoints.value = points
+
+    // 按 PolyLineID 分组
+    polyLines.value = {}
+    polyLinePoints.value.forEach(point => {
+      if (!polyLines.value[point.polyLineId]) {
+        polyLines.value[point.polyLineId] = []
+      }
+      polyLines.value[point.polyLineId].push(point)
+    })
+
+    // 按 PLPointID 排序
+    Object.keys(polyLines.value).forEach(lineId => {
+      polyLines.value[lineId].sort((a, b) => a.plPointId - b.plPointId)
+    })
+  } catch (e) {
+    console.error('加载 geojson 失败:', e)
+  }
+}
 
         points.push({
           id: props.ID ?? `pt_${featureIndex}`,
-          polyLineId: props.PolyLineID ?? lineId,
+          polyLineId: props.PolyLineID ?? baseLineId,
           plPointId: props.PLPointID ?? 0,
           longitude: Number(lon),
           latitude: Number(lat),
